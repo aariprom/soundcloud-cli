@@ -1,0 +1,25 @@
+[project]
+name = "soundcloud-cli"
+version = "0.1.0"
+description = "A CLI client for SoundCloud"
+authors = [
+    {name = "Your Name", email = "you@example.com"},
+]
+dependencies = [
+    "typer[all]>=0.9.0",
+    "requests>=2.31.0",
+    "rich>=13.7.0",
+    "python-mpv>=1.0.1",
+    "beautifulsoup4>=4.12.0",  # For parsing scripts to find client_id
+]
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sc_cli"]
+
+[project.scripts]
+sc-cli = "sc_cli.main:app"
