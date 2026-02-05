@@ -252,6 +252,7 @@ class REPL:
         table.add_row("pause", "Toggle pause.")
         table.add_row("repeat <one/all/off>", "Set repeat mode.")
         table.add_row("shuffle", "Shuffle the queue.")
+        table.add_row("config <get/set/list>", "Manage settings.")
         table.add_row("clear", "Clear the terminal screen.")
         table.add_row("exit", "Exit the application.")
         self.print_rich(table)
