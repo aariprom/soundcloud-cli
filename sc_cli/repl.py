@@ -2,125 +2,231 @@ import logging
 import shlex
 import threading
 import time
+import sys
+import io
 from typing import List
 from rich.console import Console
 from rich.table import Table
-from rich.prompt import Prompt
+from prompt_toolkit import PromptSession, print_formatted_text
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.formatted_text import HTML, ANSI
 
 from sc_cli.core.client import SoundCloudClient
-from sc_cli.core.player import Player
+from sc_cli.core.player import Player, RepeatMode
+from sc_cli.core.database import Database
 
 console = Console(width=120)
 
 class REPL:
     def __init__(self):
         self.client = SoundCloudClient()
-        self.player = Player()
+        self.player = Player(on_finished_callback=self.on_track_finished)
+        self.db = Database()
         self.running = True
+        self.last_search_results: List[dict] = []
+        self.session = PromptSession()
+        
+    def print_rich(self, renderable):
+        """Helper to print Rich objects using prompt_toolkit's ANSI renderer for safe async output."""
+        f = io.StringIO()
+        # Force terminal to ensure ANSI codes are generated
+        c = Console(file=f, force_terminal=True, width=120)
+        c.print(renderable)
+        print_formatted_text(ANSI(f.getvalue()), end='')
         
     def start(self):
-        console.print("[bold green]SoundCloud CLI Interactive Mode[/bold green]")
-        console.print("Type 'help' for commands.")
+        self.print_rich("[bold green]SoundCloud CLI Interactive Mode[/bold green]")
+        self.print_rich("Type 'help' for commands.")
         
-        while self.running:
-            try:
-                user_input = Prompt.ask("[bold cyan]sc-cli[/bold cyan]")
-                if not user_input.strip():
+        with patch_stdout():
+            # We don't need re-bind global console as print_rich handles it properly now
+            
+            while self.running:
+                try:
+                    # use prompt_toolkit prompt
+                    # We can use HTML for coloring prompt if needed, but simple string works.
+                    # sc-cli: 
+                    # Using list of (style, text) tuples for robustness
+                    user_input = self.session.prompt([('fg:cyan bold', 'sc-cli'), ('', ': ')])
+                    
+                    if not user_input.strip():
+                        continue
+                    
+                    parts = shlex.split(user_input)
+                    cmd = parts[0].lower()
+                    args = parts[1:]
+                    
+                    if cmd in ['exit', 'quit', 'q']:
+                        self.stop()
+                        break
+                    elif cmd == 'help':
+                        self.show_help()
+                    elif cmd == 'search':
+                        self.search(" ".join(args))
+                    elif cmd == 'play':
+                        if not args:
+                            # If queue exists but nothing playing, start it.
+                            if self.player.queue and self.player.current_index == -1:
+                                 self.print_rich("Starting queue...")
+                                 self.next_track() # Start first track
+                            else:
+                                 self.player.play()
+                                 self.print_rich("Resumed.")
+                        else:
+                            self.play_track(args[0])
+                    elif cmd == 'pause':
+                        self.player.toggle_pause()
+                        self.print_rich("Toggled pause.")
+                    elif cmd == 'stop':
+                        self.player.stop()
+                        self.print_rich("Stopped.")
+                    elif cmd == 'queue':
+                        if args:
+                            self.queue_track(args[0])
+                        else:
+                            self.show_queue()
+                    elif cmd == 'unqueue':
+                        if args and args[0].isdigit():
+                            self.unqueue_track(int(args[0]))
+                        else:
+                            self.print_rich("Usage: unqueue <index>")
+                    elif cmd in ['next', 'n']:
+                        self.next_track()
+                    elif cmd in ['prev', 'p']:
+                        self.prev_track()
+                    elif cmd == 'status':
+                        self.show_status()
+                    elif cmd in ['fave', 'fav']:
+                        if args:
+                            self.add_favorite(args[0])
+                        else:
+                            self.print_rich("Usage: fave <id/index>")
+                    elif cmd == 'unfave':
+                        if args:
+                            self.remove_favorite(args[0])
+                        else:
+                            self.print_rich("Usage: unfave <id/index>")
+                    elif cmd in ['favorites', 'favs']:
+                        self.show_favorites()
+                    elif cmd == 'save':
+                        if args:
+                            self.save_queue_as_playlist(args[0])
+                        else:
+                            self.print_rich("Usage: save <name>")
+                    elif cmd == 'load':
+                        if args:
+                            self.load_playlist(args[0])
+                        else:
+                            self.print_rich("Usage: load <name>")
+                    elif cmd == 'playlists':
+                        self.show_playlists()
+                    elif cmd == 'shuffle':
+                        self.player.shuffle_queue()
+                        self.print_rich("Queue shuffled.")
+                    elif cmd == 'repeat':
+                        if args:
+                            self.set_repeat(args[0])
+                        else:
+                            self.print_rich(f"Current Repeat Mode: {self.player.repeat_mode.name}")
+                    elif cmd == 'seek':
+                        if args:
+                            try:
+                                 val = args[0]
+                                 if '%' in val:
+                                      self.player.seek(float(val.replace('%', '')))
+                                 else:
+                                      self.player.seek(float(val))
+                            except Exception as e:
+                                 self.print_rich(f"Error seeking: {e}")
+                        else:
+                            self.print_rich("Usage: seek <seconds>")
+                    else:
+                        self.print_rich(f"[red]Unknown command: {cmd}[/red]")
+                        
+                except KeyboardInterrupt:
+                    # In prompt_toolkit, Ctrl+C raises KeyboardInterrupt. 
+                    # We might just want to clear line or exit? 
+                    # Usually just continue.
                     continue
-                
-                parts = shlex.split(user_input)
-                cmd = parts[0].lower()
-                args = parts[1:]
-                
-                if cmd in ['exit', 'quit', 'q']:
+                except EOFError:
+                    # Ctrl+D
                     self.stop()
                     break
-                elif cmd == 'help':
-                    self.show_help()
-                elif cmd == 'search':
-                    self.search(" ".join(args))
-                elif cmd == 'play':
-                    if not args:
-                        self.player.play()
-                        console.print("Resumed.")
-                    else:
-                        self.play_track(args[0])
-                elif cmd == 'pause':
-                    self.player.toggle_pause()
-                    console.print("Toggled pause.")
-                elif cmd == 'stop':
-                    self.player.stop()
-                    console.print("Stopped.")
-                elif cmd == 'queue':
-                    if args:
-                        self.queue_track(args[0])
-                    else:
-                        self.show_queue()
-                elif cmd in ['next', 'n']:
-                    self.next_track()
-                elif cmd in ['prev', 'p']:
-                    self.prev_track()
-                elif cmd == 'status':
-                    self.show_status()
-                else:
-                    console.print(f"[red]Unknown command: {cmd}[/red]")
-                    
-            except KeyboardInterrupt:
-                console.print("\nType 'exit' to quit.")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                except Exception as e:
+                    self.print_rich(f"[red]Error: {e}[/red]")
                 
     def stop(self):
         self.player.stop()
         self.running = False
-        console.print("Goodbye!")
+        self.print_rich("Goodbye!")
 
     def show_help(self):
         table = Table(title="Commands")
         table.add_column("Command", style="cyan")
         table.add_column("Description")
         table.add_row("search <query>", "Search for tracks.")
-        table.add_row("play <id|url>", "Play a track immediately (clears queue).")
-        table.add_row("queue <id|url>", "Add a track to the queue.")
-        table.add_row("queue", "Show current queue.")
+        table.add_row("play <id|num>", "Play a track (clears queue). Num refers to search result.")
+        table.add_row("queue <id|num>", "Add a track to the queue.")
+        table.add_row("unqueue <index>", "Remove track from queue by index #.")
+        table.add_row("fave <id|num>", "Save track to favorites.")
+        table.add_row("favorites", "List favorites.")
+        table.add_row("save <name>", "Save current queue as a playlist.")
+        table.add_row("playlists", "List saved playlists.")
+        table.add_row("load <name>", "Load a playlist into the queue.")
         table.add_row("next / n", "Skip to next track.")
         table.add_row("prev / p", "Go to previous track.")
         table.add_row("pause", "Toggle pause.")
+        table.add_row("repeat <one/all/off>", "Set repeat mode.")
+        table.add_row("shuffle", "Shuffle the queue.")
         table.add_row("exit", "Exit the application.")
-        console.print(table)
+        self.print_rich(table)
 
     def search(self, query: str):
         with console.status(f"Searching for '{query}'..."):
             results = self.client.search_tracks(query)
             
         if not results:
-            console.print("[red]No results.[/red]")
+            self.print_rich("[red]No results.[/red]")
+            self.last_search_results = []
             return
+        
+        self.last_search_results = results # Store for numeric access
 
         table = Table(title=f"Results for '{query}'")
+        table.add_column("#", style="dim")
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Title", style="magenta")
         table.add_column("Artist", style="green")
         table.add_column("Duration", style="yellow")
         
-        for track in results:
+        for i, track in enumerate(results):
             title = track.get('title', 'Unknown')
             user = track.get('user', {}).get('username', 'Unknown')
             duration_ms = track.get('duration', 0)
             dur_str = f"{duration_ms // 60000}:{(duration_ms // 1000) % 60:02d}"
             tid = str(track.get('id', ''))
-            table.add_row(tid, title, user, dur_str)
+            table.add_row(str(i+1), tid, title, user, dur_str)
             
-        console.print(table)
+        self.print_rich(table)
 
     def _resolve_track(self, id_or_url: str):
+        # Heuristic for numeric selection
         if id_or_url.isdigit():
-            # ID lookup
-            return self.client.get_track_by_id(int(id_or_url))
+            val = int(id_or_url)
+            # If value is small (<= 100) and we have search results, assume index
+            if 0 < val <= len(self.last_search_results) and val < 1000: 
+                 # 1000 is generous, IDs are usually huge (9+ digits)
+                 # but technically a very old track *could* have a small ID.
+                 # Given recent V2, usually 9-10 digits.
+                 return self.last_search_results[val-1]
+            
+            # Otherwise assume ID
+            return self.client.get_track_by_id(val)
+            
         elif "soundcloud.com" in id_or_url:
             return self.client.get_track_details(id_or_url)
         else:
-            raise ValueError("Invalid argument. Provide a Track ID or SoundCloud URL.")
+            raise ValueError("Invalid argument. Provide a Track ID, Number (from search), or SoundCloud URL.")
 
     def _get_media_stream(self, track):
         media = track.get('media', {}).get('transcodings', [])
@@ -133,27 +239,27 @@ class REPL:
                 
             stream_url = self._get_media_stream(track)
             if not stream_url:
-                console.print("[red]No stream available for this track.[/red]")
+                self.print_rich("[red]No stream available for this track.[/red]")
                 return
 
             self.player.play_now(track, stream_url)
-            console.print(f"[bold green]Playing:[/bold green] {track.get('title')}")
+            self.print_rich(f"[bold green]Playing:[/bold green] {track.get('title')}")
             
         except Exception as e:
-            console.print(f"[red]Error playing track: {e}[/red]")
+            self.print_rich(f"[red]Error playing track: {e}[/red]")
 
     def queue_track(self, id_or_url: str):
         try:
             with console.status("Resolving track..."):
                 track = self._resolve_track(id_or_url)
             self.player.add_to_queue(track)
-            console.print(f"Added to queue: {track.get('title')}")
+            self.print_rich(f"Added to queue: {track.get('title')}")
         except Exception as e:
-            console.print(f"[red]Error queuing: {e}[/red]")
+            self.print_rich(f"[red]Error queuing: {e}[/red]")
 
     def show_queue(self):
         if not self.player.queue:
-            console.print("Queue is empty.")
+            self.print_rich("Queue is empty.")
             return
             
         table = Table(title="Queue")
@@ -164,7 +270,7 @@ class REPL:
             style = "bold green" if i == self.player.current_index else ""
             table.add_row(str(i+1), track.get('title', 'Unknown'), style=style)
             
-        console.print(table)
+        self.print_rich(table)
 
     def next_track(self):
         track = self.player.next()
@@ -172,24 +278,125 @@ class REPL:
             # Need to load stream
             stream_url = self._get_media_stream(track)
             self.player.load_stream(stream_url)
-            console.print(f"[bold green]Now Playing:[/bold green] {track.get('title')}")
+            self.print_rich(f"[bold green]Now Playing:[/bold green] {track.get('title')}")
         else:
-            console.print("End of queue.")
+            self.print_rich("End of queue.")
 
     def prev_track(self):
         track = self.player.prev()
         if track:
              stream_url = self._get_media_stream(track)
              self.player.load_stream(stream_url)
-             console.print(f"[bold green]Now Playing:[/bold green] {track.get('title')}")
+             self.print_rich(f"[bold green]Now Playing:[/bold green] {track.get('title')}")
         else:
-             console.print("Start of queue.")
+             self.print_rich("Start of queue.")
 
     def show_status(self):
         track = self.player.current_track()
         if track:
-            console.print(f"Playing: {track.get('title')}")
+            self.print_rich(f"Playing: {track.get('title')}")
             # Could add time checks if mpv property access works well
         else:
-            console.print("Nothing playing.")
+            self.print_rich("Nothing playing.")
+
+    def set_repeat(self, mode_str: str):
+        mode_str = mode_str.lower()
+        if mode_str == 'all':
+            self.player.set_repeat_mode(RepeatMode.ALL)
+        elif mode_str == 'one':
+            self.player.set_repeat_mode(RepeatMode.ONE)
+        elif mode_str == 'off':
+            self.player.set_repeat_mode(RepeatMode.OFF)
+        else:
+            self.print_rich("Usage: repeat <one/all/off>")
+            return
+        self.print_rich(f"Repeat Mode set to: {self.player.repeat_mode.name}")
+
+    def add_favorite(self, id_or_url: str):
+        try:
+             track = self._resolve_track(id_or_url)
+             self.db.add_favorite(track)
+             self.print_rich(f"Added to favorites: {track.get('title')}")
+        except Exception as e:
+            self.print_rich(f"[red]Error: {e}[/red]")
+
+    def remove_favorite(self, id_or_url: str):
+         # If arg is numeric index in favorites list? Or ID?
+         # For simplicity, resolve it first (supports search index or ID),
+         # then remove by ID.
+         try:
+             track = self._resolve_track(id_or_url)
+             self.db.remove_favorite(track.get('id'))
+             self.print_rich(f"Removed from favorites: {track.get('title')}")
+         except Exception as e:
+             self.print_rich(f"[red]Error: {e}[/red]")
+
+    def show_favorites(self):
+        if not self.db.favorites:
+            self.print_rich("No favorites saved.")
+            return
+            
+        # We treat favorites list as search results so user can `play 1` from it!
+        self.last_search_results = self.db.favorites
+        
+        table = Table(title="Favorites")
+        table.add_column("#", style="dim")
+        table.add_column("ID", style="cyan")
+        table.add_column("Title", style="magenta")
+        
+        for i, track in enumerate(self.db.favorites):
+            table.add_row(str(i+1), str(track.get('id')), track.get('title', 'Unknown'))
+            
+        self.print_rich(table)
+        self.print_rich("[dim]You can now select these using numbers (e.g., play 1)[/dim]")
+
+    def save_queue_as_playlist(self, name: str):
+        if not self.player.queue:
+            self.print_rich("Queue is empty.")
+            return
+        self.db.save_playlist(name, self.player.queue)
+        self.print_rich(f"Saved playlist '{name}' with {len(self.player.queue)} tracks.")
+
+    def show_playlists(self):
+        if not self.db.playlists:
+             self.print_rich("No playlists saved.")
+             return
+        
+        table = Table(title="Playlists")
+        table.add_column("Name", style="cyan")
+        table.add_column("Track Count")
+        
+        for name, tracks in self.db.playlists.items():
+            table.add_row(name, str(len(tracks)))
+        self.print_rich(table)
+        
+    def load_playlist(self, name: str):
+        tracks = self.db.get_playlist(name)
+        if not tracks:
+             self.print_rich(f"[red]Playlist '{name}' not found.[/red]")
+             return
+        
+        was_empty = (len(self.player.queue) == 0)
+        
+        for t in tracks:
+            self.player.add_to_queue(t)
+        self.print_rich(f"Added {len(tracks)} tracks from '{name}' to queue.")
+        
+        # If queue was empty and we are not playing, start playing first track
+        if was_empty and self.player.current_index == -1:
+             self.print_rich("[dim]Auto-starting playback...[/dim]")
+             self.next_track()
+
+    def unqueue_track(self, index: int):
+         # UI is 1-indexed, internal is 0-indexed
+         if self.player.remove_from_queue(index - 1):
+             self.print_rich(f"Removed track at #{index}.")
+         else:
+             self.print_rich("Could not remove (invalid index or currently playing).")
+
+    def on_track_finished(self):
+        def _next():
+             self.next_track()
+        
+        threading.Thread(target=_next).start()
 
