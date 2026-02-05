@@ -97,8 +97,6 @@ class REPL:
                         self.show_help()
                     elif cmd == 'search':
                         self.search(" ".join(args))
-                        self.print_rich("[dim]You can play(queue) a track by typing 'play(queue) <#>'.[/dim]")
-                        self.print_rich("[dim]You can also use 'play id:<id>' to play a track with id.[/dim]")
                     elif cmd == 'station':
                         if args:
                             self.start_station(" ".join(args))
@@ -239,7 +237,7 @@ class REPL:
         table.add_column("Description")
         table.add_row("search <query>", "Search for tracks.")
         table.add_row("station <query>", "Start an infinite radio station based on query.")
-        table.add_row("play <id|num>", "Play a track (clears queue). Num refers to search result.")
+        table.add_row("play <id|num> / play id:<id>", "Play a track (clears queue). Num refers to search result.")
         table.add_row("queue <id|num>", "Add a track to the queue.")
         table.add_row("unqueue <index>", "Remove track from queue by index #.")
         table.add_row("fave <id|num>", "Save track to favorites.")
