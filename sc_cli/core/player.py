@@ -1,4 +1,3 @@
-import logging
 import mpv
 import random
 from enum import Enum
@@ -171,5 +170,5 @@ class Player:
             pos = self.mpv.time_pos or 0
             dur = self.mpv.duration or 0
             return pos, dur
-        except:
+        except Exception:
             return 0, 0

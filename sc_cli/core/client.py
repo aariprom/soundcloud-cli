@@ -1,6 +1,7 @@
 import re
 import logging
 import requests
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from bs4 import BeautifulSoup
 
@@ -8,14 +9,43 @@ class SoundCloudClient:
     BASE_URL = "https://api-v2.soundcloud.com"
     SITE_URL = "https://soundcloud.com"
 
+    CONFIG_DIR = Path.home() / ".config" / "soundcloud-cli"
+    CLIENT_ID_FILE = CONFIG_DIR / "client_id"
+
     def __init__(self, client_id: Optional[str] = None):
         self.session = requests.Session()
         self.client_id = client_id
+        
+        # Try loading from cache if not provided
+        if not self.client_id:
+            self.client_id = self._get_cached_client_id()
+            
         if not self.client_id:
             self.client_id = self._fetch_client_id()
+            if self.client_id:
+                self._save_client_id(self.client_id)
         
         if not self.client_id:
             raise ValueError("Could not find a valid Client ID. Please provide one manually.")
+
+    def _get_cached_client_id(self) -> Optional[str]:
+        if self.CLIENT_ID_FILE.exists():
+            try:
+                cid = self.CLIENT_ID_FILE.read_text().strip()
+                if cid and len(cid) > 20: # Basic validation
+                    print(f"Loaded Client ID from cache: {cid}")
+                    return cid
+            except Exception:
+                pass
+        return None
+
+    def _save_client_id(self, client_id: str):
+        try:
+            self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            self.CLIENT_ID_FILE.write_text(client_id)
+            print(f"Saved Client ID to {self.CLIENT_ID_FILE}")
+        except Exception as e:
+            print(f"Warning: Could not save client_id: {e}")
 
     def _fetch_client_id(self) -> Optional[str]:
         """

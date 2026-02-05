@@ -1,16 +1,12 @@
-import logging
 import shlex
 import threading
-import time
-import sys
 import io
 import html
+import os
 from typing import List
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
-from rich.align import Align
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.formatted_text import HTML, ANSI
@@ -89,8 +85,8 @@ class REPL:
                         self.show_help()
                     elif cmd == 'search':
                         self.search(" ".join(args))
-                        self.print_rich(f"[dim]You can play(queue) a track by typing 'play(queue) <#>'.[/dim]")
-                        self.print_rich(f"[dim]You can also use 'play id:<id>' to play a track with id.[/dim]")
+                        self.print_rich("[dim]You can play(queue) a track by typing 'play(queue) <#>'.[/dim]")
+                        self.print_rich("[dim]You can also use 'play id:<id>' to play a track with id.[/dim]")
                     elif cmd == 'station':
                         if args:
                             self.start_station(" ".join(args))
@@ -153,10 +149,12 @@ class REPL:
                             self.print_rich("Usage: load <name>")
                     elif cmd == 'playlists':
                         self.show_playlists()
-                        self.print_rich(f"[dim]You can view a playlist by typing 'view <playlist_name>'.[/dim]")
+                        self.print_rich("[dim]You can view a playlist by typing 'view <playlist_name>'.[/dim]")
                     elif cmd == 'shuffle':
                         self.player.shuffle_queue()
                         self.print_rich("Queue shuffled.")
+                    elif cmd == 'clear':
+                        os.system('clear')
                     elif cmd == 'repeat':
                         if args:
                             self.set_repeat(args[0])
@@ -221,6 +219,7 @@ class REPL:
         table.add_row("pause", "Toggle pause.")
         table.add_row("repeat <one/all/off>", "Set repeat mode.")
         table.add_row("shuffle", "Shuffle the queue.")
+        table.add_row("clear", "Clear the terminal screen.")
         table.add_row("exit", "Exit the application.")
         self.print_rich(table)
 
@@ -573,7 +572,7 @@ class REPL:
             try:
                 pos = float(pos)
                 dur = float(dur)
-            except:
+            except (ValueError, TypeError):
                 pos = 0.0
                 dur = 0.0
                 
@@ -607,7 +606,7 @@ class REPL:
         
         panel = Panel(
             table,
-            title=f"[bold magenta]Track Info[/bold magenta]",
+            title="[bold magenta]Track Info[/bold magenta]",
             subtitle="[dim]SoundCloud CLI[/dim]"
         )
         self.print_rich(panel)
