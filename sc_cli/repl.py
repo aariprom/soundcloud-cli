@@ -7,6 +7,7 @@ from typing import List
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.text import Text
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.formatted_text import HTML, ANSI
@@ -14,6 +15,8 @@ from prompt_toolkit.formatted_text import HTML, ANSI
 from sc_cli.core.client import SoundCloudClient
 from sc_cli.core.player import Player, RepeatMode
 from sc_cli.core.database import Database
+from sc_cli.core.config import ConfigManager
+from sc_cli.core.ascii_art import generate_ascii_from_url
 
 console = Console(width=120)
 
@@ -33,7 +36,16 @@ LOGO = r"""
 
 class REPL:
     def __init__(self):
-        self.client = SoundCloudClient()
+        self.config = ConfigManager()
+        
+        # Check config for client_id, allows manual override
+        cid = self.config.get('client_id')
+        self.client = SoundCloudClient(client_id=cid)
+        
+        # If client fetched a new ID (automatic), update config
+        if self.client.client_id != cid:
+            self.config.set('client_id', self.client.client_id)
+            
         self.player = Player(on_finished_callback=self.on_track_finished)
         self.db = Database()
         self.running = True
@@ -155,6 +167,27 @@ class REPL:
                         self.print_rich("Queue shuffled.")
                     elif cmd == 'clear':
                         os.system('clear')
+                    elif cmd == 'config':
+                        if not args:
+                            self.print_rich(self.config.list())
+                        else:
+                            sub = args[0]
+                            if sub == 'list':
+                                self.print_rich(self.config.list())
+                            elif sub == 'get' and len(args) > 1:
+                                val = self.config.get(args[1])
+                                self.print_rich(f"{args[1]} = {val}")
+                            elif sub == 'set' and len(args) > 2:
+                                key = args[1]
+                                val = args[2]
+                                self.config.set(key, val)
+                                self.print_rich(f"Set {key} = {val}")
+                                # Special handling for client_id
+                                if key == 'client_id':
+                                    self.client.client_id = val
+                                    self.client._save_client_id(val) # Update legacy file too
+                            else:
+                                self.print_rich("Usage: config <list|get|set> [key] [value]")
                     elif cmd == 'repeat':
                         if args:
                             self.set_repeat(args[0])
@@ -591,21 +624,36 @@ class REPL:
             self.print_rich("[red]Nothing playing.[/red]")
             return
 
-        # Create a nice layout
-        table = Table(show_header=False, box=None)
-        table.add_column("Key", style="cyan")
-        table.add_column("Value", style="yellow")
+        # Metadata Table
+        meta_table = Table(show_header=False, box=None, padding=(0, 1))
+        meta_table.add_column("Key", style="cyan")
+        meta_table.add_column("Value", style="yellow", overflow="fold")
         
-        table.add_row("Title", track.get('title'))
-        table.add_row("Artist", track.get('user', {}).get('username'))
-        table.add_row("Genre", track.get('genre'))
-        table.add_row("Date", track.get('created_at', '')[:10])
-        table.add_row("Desc", str(track.get('description', ''))[:200] + "...")
-        table.add_row("ID", str(track.get('id')))
-        table.add_row("Permalink", track.get('permalink_url'))
+        meta_table.add_row("Title", track.get('title'))
+        meta_table.add_row("Artist", track.get('user', {}).get('username'))
+        meta_table.add_row("Genre", track.get('genre'))
+        meta_table.add_row("Date", track.get('created_at', '')[:10])
+        val_desc = str(track.get('description', ''))[:200].replace('\n', ' ') + "..."
+        meta_table.add_row("Desc", val_desc)
+        meta_table.add_row("ID", str(track.get('id')))
+        meta_table.add_row("Permalink", track.get('permalink_url'))
+        
+        # ASCII Art
+        art = Text("[No Art]", style="dim")
+        if self.config.get('ascii_enabled', True):
+            url = track.get('artwork_url')
+            if url:
+                 url = url.replace('large', 't500x500') 
+                 art = generate_ascii_from_url(url, width=self.config.get('ascii_art_width', 60))
+
+        # Main Layout
+        layout = Table(show_header=False, box=None, padding=(0, 2))
+        layout.add_column("Art")
+        layout.add_column("Meta")
+        layout.add_row(art, meta_table)
         
         panel = Panel(
-            table,
+            layout,
             title="[bold magenta]Track Info[/bold magenta]",
             subtitle="[dim]SoundCloud CLI[/dim]"
         )
