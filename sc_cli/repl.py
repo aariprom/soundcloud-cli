@@ -45,6 +45,13 @@ class REPL:
         self.session = PromptSession(bottom_toolbar=self._get_bottom_toolbar, refresh_interval=0.5) 
         # Refresh interval enables auto-updating the toolbar (polling)
         
+        # Station Mode State
+        self.station_mode = False
+        self.station_query = ""
+        self.station_next_href = None
+        self.seen_track_ids = set()
+        self.fetching_station = False
+        
     def print_rich(self, renderable):
         """Helper to print Rich objects using prompt_toolkit's ANSI renderer for safe async output."""
         f = io.StringIO()
@@ -84,6 +91,11 @@ class REPL:
                         self.search(" ".join(args))
                         self.print_rich(f"[dim]You can play(queue) a track by typing 'play(queue) <#>'.[/dim]")
                         self.print_rich(f"[dim]You can also use 'play id:<id>' to play a track with id.[/dim]")
+                    elif cmd == 'station':
+                        if args:
+                            self.start_station(" ".join(args))
+                        else:
+                            self.print_rich("Usage: station <query>")
                     elif cmd == 'play':
                         if not args:
                             # If queue exists but nothing playing, start it.
@@ -115,7 +127,7 @@ class REPL:
                         self.next_track()
                     elif cmd in ['prev', 'p']:
                         self.prev_track()
-                    elif cmd == 'statusthe Elite':
+                    elif cmd == 'status':
                         self.show_status()
                     elif cmd in ['fave', 'fav']:
                         if args:
@@ -139,7 +151,7 @@ class REPL:
                             self.load_playlist(args[0])
                         else:
                             self.print_rich("Usage: load <name>")
-                    elif cmd == 'playlist':
+                    elif cmd == 'playlists':
                         self.show_playlists()
                         self.print_rich(f"[dim]You can view a playlist by typing 'view <playlist_name>'.[/dim]")
                     elif cmd == 'shuffle':
@@ -195,6 +207,7 @@ class REPL:
         table.add_column("Command", style="cyan")
         table.add_column("Description")
         table.add_row("search <query>", "Search for tracks.")
+        table.add_row("station <query>", "Start an infinite radio station based on query.")
         table.add_row("play <id|num>", "Play a track (clears queue). Num refers to search result.")
         table.add_row("queue <id|num>", "Add a track to the queue.")
         table.add_row("unqueue <index>", "Remove track from queue by index #.")
@@ -213,7 +226,8 @@ class REPL:
 
     def search(self, query: str):
         self.print_rich(f"Searching for '{query}'...")
-        results = self.client.search_tracks(query, limit=10)
+        # Ignore next_href for standard search command
+        results, _ = self.client.search_tracks(query, limit=10)
             
         if not results:
             self.print_rich("[red]No results.[/red]")
@@ -259,6 +273,86 @@ class REPL:
         else:
             raise ValueError("Invalid argument. Provide a Track ID, Number (from search), or SoundCloud URL.")
 
+    # --- Station Mode Logic ---
+
+    def start_station(self, query: str):
+        self.station_mode = True
+        self.station_query = query
+        self.seen_track_ids = set()
+        self.station_next_href = None
+        
+        self.player.clear_queue()
+        self.print_rich(f"[bold magenta]Starting Station: {query}[/bold magenta]")
+        
+        # Initial fetch
+        self._fetch_station_tracks()
+        
+        # Start playing if we found something
+        if self.player.queue:
+             self.next_track()
+        else:
+             self.print_rich("[red]Could not start station (no results).[/red]")
+             self.station_mode = False
+
+    def _fetch_station_tracks(self):
+        if self.fetching_station:
+            return
+        self.fetching_station = True
+        
+        try:
+            self.print_rich("[dim]Fetching more tracks for station...[/dim]")
+            limit = 10
+            
+            # Use next_href if available, otherwise start new search
+            tracks, next_href = self.client.search_tracks(
+                self.station_query, 
+                limit=limit, 
+                next_href=self.station_next_href
+            )
+            
+            self.station_next_href = next_href
+            
+            # Check if we were at the end of the queue *before* adding
+            was_at_end = (self.player.current_index >= len(self.player.queue) - 1)
+            
+            added_count = 0
+            for t in tracks:
+                tid = t.get('id')
+                # Filter duplicates (and ensure it's playable?)
+                if tid and tid not in self.seen_track_ids:
+                    self.seen_track_ids.add(tid)
+                    self.player.add_to_queue(t)
+                    added_count += 1
+            
+            if added_count == 0:
+                self.print_rich("[dim]No new unique tracks found in this batch.[/dim]")
+            elif was_at_end:
+                if self.player.current_index != -1:
+                    # Auto-advance if we were stuck at the end and it's not idle
+                    self.print_rich("[bold magenta]Station updated. Auto-playing next track...[/bold magenta]")
+                    self.next_track()
+                else:
+                    self.print_rich("[bold magenta]Station updated. Auto-playing next track...[/bold magenta]")
+            
+        except Exception as e:
+            self.print_rich(f"[red]Error fetching station tracks: {e}[/red]")
+        finally:
+            self.fetching_station = False
+
+    def _check_station_refill(self):
+        if not self.station_mode:
+            return
+            
+        # If we are near the end of the queue (e.g., less than 3 tracks remaining)
+        # queue is list, current_index is int.
+        # remaining = len - 1 - current_index
+        remaining = len(self.player.queue) - 1 - self.player.current_index
+        
+        if remaining < 5 and self.station_next_href:
+             threading.Thread(target=self._fetch_station_tracks).start()
+
+    # --------------------------
+
     def _get_media_stream(self, track):
         media = track.get('media', {}).get('transcodings', [])
         return self.client.get_stream_url(media)
@@ -293,17 +387,33 @@ class REPL:
             self.print_rich("Queue is empty.")
             return
             
-        table = Table(title="Queue")
+        total = len(self.player.queue)
+        current = self.player.current_index
+        
+        # Window: start = max(0, current - 5)
+        #         end = min(total, current + 15)
+        start_idx = max(0, current - 5)
+        end_idx = min(total, current + 15)
+        
+        table = Table(title=f"Queue ({start_idx+1}-{end_idx} of {total})")
         table.add_column("#", style="dim")
         table.add_column("Title")
         
-        for i, track in enumerate(self.player.queue):
-            style = "bold green" if i == self.player.current_index else ""
-            table.add_row(str(i+1), track.get('title', 'Unknown'), style=style)
+        if start_idx > 0:
+             table.add_row("...", "...", style="dim")
+        
+        for i in range(start_idx, end_idx):
+            track = self.player.queue[i]
+            style = "bold green" if i == current else ""
+            idx = str(i+1) if i != current else "▶"
+            table.add_row(idx, track.get('title', 'Unknown'), style=style)
+            
+        if end_idx < total:
+             table.add_row("...", f"{total - end_idx} more...", style="dim")
             
         self.print_rich(table)
 
-    def next_track(self):
+    def next_track(self):        
         track = self.player.next()
         if track:
             # Need to load stream
@@ -311,7 +421,12 @@ class REPL:
             self.player.load_stream(stream_url)
             self.print_rich(f"[bold green]Now Playing:[/bold green] {track.get('title')}")
         else:
-            self.print_rich("End of queue.")
+            if self.station_mode:
+                # we need to fetch more tracks instead of stopping
+                self._fetch_station_tracks()
+                
+            else:
+                self.print_rich("End of queue.")
 
     def prev_track(self):
         track = self.player.prev()
@@ -521,6 +636,7 @@ class REPL:
     def on_track_finished(self):
         def _next():
              self.next_track()
+             self._check_station_refill()
         
         threading.Thread(target=_next).start()
 

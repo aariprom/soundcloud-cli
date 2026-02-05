@@ -117,6 +117,11 @@ class Player:
              random.shuffle(self.queue)
              self.current_index = -1
 
+    def clear_queue(self):
+        self.stop()
+        self.queue = []
+        self.current_index = -1
+
     def remove_from_queue(self, index: int) -> bool:
         if 0 <= index < len(self.queue):
             # If removing current track? Not allowed/undefined behavior usually.

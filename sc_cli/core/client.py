@@ -62,17 +62,28 @@ class SoundCloudClient:
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
 
-    def search_tracks(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        params = {
-            "q": query,
-            "client_id": self.client_id,
-            "limit": limit,
-            "app_version": "1706696706", # Mock version
-            "app_locale": "en"
-        }
-        resp = self.session.get(f"{self.BASE_URL}/search/tracks", params=params, headers=self._get_headers())
+    def search_tracks(self, query: str, limit: int = 10, next_href: Optional[str] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
+        if next_href:
+             # Ensure client_id is present in the URL
+             if "client_id=" not in next_href:
+                 sep = "&" if "?" in next_href else "?"
+                 next_href += f"{sep}client_id={self.client_id}"
+                 
+             # Use the provided next_href for pagination
+             resp = self.session.get(next_href, headers=self._get_headers())
+        else:
+            params = {
+                "q": query,
+                "client_id": self.client_id,
+                "limit": limit,
+                "app_version": "1706696706", # Mock version
+                "app_locale": "en"
+            }
+            resp = self.session.get(f"{self.BASE_URL}/search/tracks", params=params, headers=self._get_headers())
+            
         resp.raise_for_status()
-        return resp.json().get('collection', [])
+        data = resp.json()
+        return data.get('collection', []), data.get('next_href')
 
     def get_track_details(self, track_url: str) -> Dict[str, Any]:
         """Resolve a track URL to its details."""
