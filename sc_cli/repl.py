@@ -4,9 +4,13 @@ import threading
 import time
 import sys
 import io
+import html
 from typing import List
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.align import Align
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.formatted_text import HTML, ANSI
@@ -17,6 +21,20 @@ from sc_cli.core.database import Database
 
 console = Console(width=120)
 
+
+LOGO = r"""
+[bold cyan]
+   _____                       _  _____ _                 _ 
+  / ____|                     | |/ ____| |               | |
+ | (___   ___  _   _ _ __   __| | |    | | ___  _   _  __| |
+  \___ \ / _ \| | | | '_ \ / _` | |    | |/ _ \| | | |/ _` |
+  ____) | (_) | |_| | | | | (_| | |____| | (_) | |_| | (_| |
+ |_____/ \___/ \__,_|_| |_|\__,_|\_____|_|\___/ \__,_|\__,_|
+[/bold cyan][dim]
+           >_ CLI Music Player for Soundcloud
+[/dim]
+"""
+
 class REPL:
     def __init__(self):
         self.client = SoundCloudClient()
@@ -24,7 +42,8 @@ class REPL:
         self.db = Database()
         self.running = True
         self.last_search_results: List[dict] = []
-        self.session = PromptSession()
+        self.session = PromptSession(bottom_toolbar=self._get_bottom_toolbar, refresh_interval=0.5) 
+        # Refresh interval enables auto-updating the toolbar (polling)
         
     def print_rich(self, renderable):
         """Helper to print Rich objects using prompt_toolkit's ANSI renderer for safe async output."""
@@ -35,7 +54,7 @@ class REPL:
         print_formatted_text(ANSI(f.getvalue()), end='')
         
     def start(self):
-        self.print_rich("[bold green]SoundCloud CLI Interactive Mode[/bold green]")
+        self.print_rich(LOGO)
         self.print_rich("Type 'help' for commands.")
         
         with patch_stdout():
@@ -63,6 +82,8 @@ class REPL:
                         self.show_help()
                     elif cmd == 'search':
                         self.search(" ".join(args))
+                        self.print_rich(f"[dim]You can play(queue) a track by typing 'play(queue) <#>'.[/dim]")
+                        self.print_rich(f"[dim]You can also use 'play id:<id>' to play a track with id.[/dim]")
                     elif cmd == 'play':
                         if not args:
                             # If queue exists but nothing playing, start it.
@@ -94,7 +115,7 @@ class REPL:
                         self.next_track()
                     elif cmd in ['prev', 'p']:
                         self.prev_track()
-                    elif cmd == 'status':
+                    elif cmd == 'statusthe Elite':
                         self.show_status()
                     elif cmd in ['fave', 'fav']:
                         if args:
@@ -118,8 +139,9 @@ class REPL:
                             self.load_playlist(args[0])
                         else:
                             self.print_rich("Usage: load <name>")
-                    elif cmd == 'playlists':
+                    elif cmd == 'playlist':
                         self.show_playlists()
+                        self.print_rich(f"[dim]You can view a playlist by typing 'view <playlist_name>'.[/dim]")
                     elif cmd == 'shuffle':
                         self.player.shuffle_queue()
                         self.print_rich("Queue shuffled.")
@@ -128,6 +150,13 @@ class REPL:
                             self.set_repeat(args[0])
                         else:
                             self.print_rich(f"Current Repeat Mode: {self.player.repeat_mode.name}")
+                    elif cmd == 'info':
+                        self.show_info()
+                    elif cmd == 'view':
+                        if args:
+                            self.view_playlist(args[0])
+                        else:
+                            self.print_rich("Usage: view <playlist_name>")
                     elif cmd == 'seek':
                         if args:
                             try:
@@ -147,6 +176,7 @@ class REPL:
                     # In prompt_toolkit, Ctrl+C raises KeyboardInterrupt. 
                     # We might just want to clear line or exit? 
                     # Usually just continue.
+                    self.print_rich("[dim]Type 'exit' or 'quit' to quit.[/dim]")
                     continue
                 except EOFError:
                     # Ctrl+D
@@ -158,7 +188,7 @@ class REPL:
     def stop(self):
         self.player.stop()
         self.running = False
-        self.print_rich("Goodbye!")
+        self.print_rich("Turning off...")
 
     def show_help(self):
         table = Table(title="Commands")
@@ -182,8 +212,8 @@ class REPL:
         self.print_rich(table)
 
     def search(self, query: str):
-        with console.status(f"Searching for '{query}'..."):
-            results = self.client.search_tracks(query)
+        self.print_rich(f"Searching for '{query}'...")
+        results = self.client.search_tracks(query, limit=10)
             
         if not results:
             self.print_rich("[red]No results.[/red]")
@@ -210,14 +240,15 @@ class REPL:
         self.print_rich(table)
 
     def _resolve_track(self, id_or_url: str):
+        # Support explicit 'id:' prefix to bypass index lookup
+        if id_or_url.lower().startswith('id:'):
+            return self.client.get_track_by_id(int(id_or_url[3:]))
+
         # Heuristic for numeric selection
         if id_or_url.isdigit():
             val = int(id_or_url)
-            # If value is small (<= 100) and we have search results, assume index
-            if 0 < val <= len(self.last_search_results) and val < 1000: 
-                 # 1000 is generous, IDs are usually huge (9+ digits)
-                 # but technically a very old track *could* have a small ID.
-                 # Given recent V2, usually 9-10 digits.
+            # If value fits in search results, assume Index
+            if 0 < val <= len(self.last_search_results): 
                  return self.last_search_results[val-1]
             
             # Otherwise assume ID
@@ -234,8 +265,8 @@ class REPL:
 
     def play_track(self, id_or_url: str):
         try:
-            with console.status("Resolving track..."):
-                track = self._resolve_track(id_or_url)
+            # Removed console.status
+            track = self._resolve_track(id_or_url)
                 
             stream_url = self._get_media_stream(track)
             if not stream_url:
@@ -250,8 +281,8 @@ class REPL:
 
     def queue_track(self, id_or_url: str):
         try:
-            with console.status("Resolving track..."):
-                track = self._resolve_track(id_or_url)
+            self.print_rich("Resolving track...")
+            track = self._resolve_track(id_or_url)
             self.player.add_to_queue(track)
             self.print_rich(f"Added to queue: {track.get('title')}")
         except Exception as e:
@@ -393,6 +424,99 @@ class REPL:
              self.print_rich(f"Removed track at #{index}.")
          else:
              self.print_rich("Could not remove (invalid index or currently playing).")
+
+    def _get_bottom_toolbar(self):
+        try:
+            track = self.player.current_track()
+            if not track:
+                 return HTML(' <style bg="black" fg="white"> STOPPED </style> [No Track Loaded]')
+            
+            # Status
+            # Status
+            if self.player.mpv.pause:
+                 status_xml = '<style bg="yellow" fg="black"> PAUSED </style>'
+            else:
+                 status_xml = '<style bg="green" fg="black"> PLAYING </style>'
+            
+            # Info
+            # Safe access to nested dicts
+            user_data = track.get('user')
+            if isinstance(user_data, dict):
+                user = user_data.get('username', 'Unknown')
+            else:
+                user = 'Unknown'
+                
+            title = track.get('title', 'Unknown')
+            
+            # Escape HTML special chars to prevent parser errors
+            user = html.escape(str(user))
+            title = html.escape(str(title))
+            
+            # Time
+            pos, dur = self.player.get_time_info()
+            # Ensure they are numbers
+            try:
+                pos = float(pos)
+                dur = float(dur)
+            except:
+                pos = 0.0
+                dur = 0.0
+                
+            pos_str = f"{int(pos)//60:02d}:{int(pos)%60:02d}"
+            dur_str = f"{int(dur)//60:02d}:{int(dur)%60:02d}"
+            
+            
+            return HTML(f' {status_xml} <style fg="cyan">{user}</style> - <b><style fg="white">{title}</style></b> '
+                        f'<style fg="gray">| {pos_str} / {dur_str}</style>')
+        except Exception as e:
+            return HTML(f'<style bg="red" fg="white"> ERROR: {e} </style>')
+
+    def show_info(self):
+        track = self.player.current_track()
+        if not track:
+            self.print_rich("[red]Nothing playing.[/red]")
+            return
+
+        # Create a nice layout
+        table = Table(show_header=False, box=None)
+        table.add_column("Key", style="cyan")
+        table.add_column("Value", style="yellow")
+        
+        table.add_row("Title", track.get('title'))
+        table.add_row("Artist", track.get('user', {}).get('username'))
+        table.add_row("Genre", track.get('genre'))
+        table.add_row("Date", track.get('created_at', '')[:10])
+        table.add_row("Desc", str(track.get('description', ''))[:200] + "...")
+        table.add_row("ID", str(track.get('id')))
+        table.add_row("Permalink", track.get('permalink_url'))
+        
+        panel = Panel(
+            table,
+            title=f"[bold magenta]Track Info[/bold magenta]",
+            subtitle="[dim]SoundCloud CLI[/dim]"
+        )
+        self.print_rich(panel)
+
+    def view_playlist(self, name: str):
+        tracks = self.db.get_playlist(name)
+        if not tracks:
+             self.print_rich(f"[red]Playlist '{name}' not found.[/red]")
+             return
+        
+        table = Table(title=f"Playlist: {name}")
+        table.add_column("#", style="dim")
+        table.add_column("ID", style="cyan")
+        table.add_column("Title", style="green")
+        table.add_column("Artist", style="magenta")
+        table.add_column("Duration", style="yellow")
+        
+        for i, track in enumerate(tracks):
+            duration_ms = track.get('duration', 0)
+            dur_str = f"{duration_ms // 60000}:{(duration_ms // 1000) % 60:02d}"
+            user = track.get('user', {}).get('username', 'Unknown')
+            table.add_row(str(i+1), str(track.get('id')), track.get('title', 'Unknown'), user, dur_str)
+            
+        self.print_rich(table)
 
     def on_track_finished(self):
         def _next():

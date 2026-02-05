@@ -24,8 +24,6 @@ class Player:
         self.on_finished_callback = on_finished_callback
         
         # Set up event callbacks if needed, e.g. on track end
-        # Set up event callbacks if needed, e.g. on track end
-        # Set up event callbacks if needed, e.g. on track end
         @self.mpv.event_callback('end-file')
         def on_end_file(event):
             try:
@@ -48,8 +46,6 @@ class Player:
                      # Standard MPV: 0=EOF, 2=STOP, 3=QUIT, 4=ERROR
                      if self.on_finished_callback:
                          self.on_finished_callback()
-            except Exception as e:
-                print(f"Error in on_end_file: {e}")
             except Exception as e:
                 print(f"Error in on_end_file: {e}")
                 
@@ -162,3 +158,13 @@ class Player:
     
     def load_stream(self, stream_url: str):
         self._load(stream_url)
+
+    def get_time_info(self):
+        """Returns (current_time, total_duration) in seconds."""
+        try:
+            # mpv properties can be None if not playing/loaded
+            pos = self.mpv.time_pos or 0
+            dur = self.mpv.duration or 0
+            return pos, dur
+        except:
+            return 0, 0
