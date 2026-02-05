@@ -1,17 +1,14 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+
 
 class ConfigManager:
     CONFIG_DIR = Path.home() / ".config" / "soundcloud-cli"
     CONFIG_FILE = CONFIG_DIR / "config.json"
-    
-    DEFAULTS = {
-        "theme_color": "cyan",
-        "ascii_art_width": 60,
-        "ascii_enabled": True
-    }
+
+    DEFAULTS = {"theme_color": "cyan", "ascii_art_width": 60, "ascii_enabled": True}
 
     def __init__(self):
         self.config: Dict[str, Any] = self.DEFAULTS.copy()
@@ -20,7 +17,7 @@ class ConfigManager:
     def load(self):
         if not self.CONFIG_FILE.exists():
             return
-        
+
         try:
             text = self.CONFIG_FILE.read_text()
             data = json.loads(text)
@@ -36,7 +33,9 @@ class ConfigManager:
             logging.error(f"Failed to save config: {e}")
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self.config.get(key, default if default is not None else self.DEFAULTS.get(key))
+        return self.config.get(
+            key, default if default is not None else self.DEFAULTS.get(key)
+        )
 
     def set(self, key: str, value: Any):
         # Basic type inference for boolean/int
@@ -47,9 +46,9 @@ class ConfigManager:
                 value = False
             elif value.isdigit():
                 value = int(value)
-                
+
         self.config[key] = value
         self.save()
-        
+
     def list(self) -> Dict[str, Any]:
         return self.config
